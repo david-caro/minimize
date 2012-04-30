@@ -16,7 +16,7 @@ help
 
  > minimize -h
 
- Usage: $0 [-d] [-p user:group] command options 
+    Usage: $0 [-d] [-p user:group] command options 
  
     Sript to minimize and bundle js and css files using yuicompressor
     (yuicompressor must be installed and in the PATH for this script to work).
