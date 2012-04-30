@@ -7,15 +7,12 @@ Also creates the bundle files given a config file.
 
 **The yuicompressor must be installed and must be in the path with a wrapper script, like this one:**
 
-`
-#!/bin/bash
-
-java -jar /opt/yuicompressor/yuicompressor-2.4.7.jar "$@"
-`
+    #!/bin/bash
+    
+    java -jar /opt/yuicompressor/yuicompressor-2.4.7.jar "$@"
 
 help
 --------
-`
  # minimize -h
  Usage: $0 [-d] [-p user:group] command options 
  
@@ -146,4 +143,3 @@ help
         directory
             Search in the given directory for unminimized files (the local
             dir by default)
-`
