@@ -13,7 +13,9 @@ Also creates the bundle files given a config file.
 
 help
 --------
- # minimize -h
+
+ > minimize -h
+
  Usage: $0 [-d] [-p user:group] command options 
  
     Sript to minimize and bundle js and css files using yuicompressor
