@@ -1,0 +1,510 @@
+#!/bin/bash
+#
+# minimize - by David Caro <david.caro.estevez@gmail.com>
+#
+# Simple (or not so simple) script to minimize and gzip all the js and css
+# files of a directory, and change between the minimized and unminimized
+# versions easily, also can create bundles given a config file.
+#
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+## minimum size in bytes for a file to be gzipped
+MINSIZE=300
+
+
+usage()
+{
+    cat <<EOH
+Usage: $0 [-d] [-p user:group] command options 
+
+    Sript to minimize and bundle js and css files using yuicompressor
+    (yuicompressor must be installed and in the PATH for this script to work).
+    Uses hardlinks to copy the files, and leaves a copy of the file 
+    unminimized, and minimized like this:
+
+    file.js
+    file.js.gz
+    file.js.minimized
+    file.js.unminimized
+
+    So later if you want to restore the unminimized fils you just have to
+    restore them from the unminmized file (or use the unminimize option).
+
+    By default it also creates a gzipped version of the file to be served
+    later. An example of apache configuration to do this will be something
+    like this:
+    ----------------------
+    AddEncoding gzip 
+    RewriteEngine On
+    ## If the browser accepts gzip
+    RewriteCond %{HTTP:Accept-Encoding} gzip
+    ## MSIE is fine, but masquerades as Netscape
+    RewriteCond %{HTTP_USER_AGENT} \\bMSIE [S=1]
+    ## Netscape has problems with gzip
+    RewriteCond %{HTTP_USER_AGENT} ^Mozilla/4\.0[678]
+    ## Only js and css files allowed (if more add them here)
+    RewriteCond %{REQUEST_URI} ^.*\.(js|css)$
+    ## And serve it only if the files exists...
+    RewriteCond %{REQUEST_FILENAME}.gz -f 
+    RewriteRule (.*)$ /\$1.gz [L,E=vary]
+    ## Avoid th proxies to send gzipped content to clients that did
+    ## not send the accept: gzip header
+    Header append Vary User-Agent env=vary
+
+    ## Force the content-type header
+    <FilesMatch \.js.gz>
+        ForceType text/javascript
+    </FilesMatch>
+    <FilesMatch \.css.gz>
+        ForceType text/css
+    </FilesMatch>
+    -------------------------
+
+    Global options:
+    -d
+        Enable Debug mode.
+
+    -p user:group
+        use this user and group for the generated files. (by default current
+        user and group)
+
+
+    Commands:
+
+    bundle [-b basepath] [-c config_file]
+        Create the bundles of the files specified in the config files.
+
+        Options:
+        -b basedir
+            When reading the bundle file, this directory (if given) will be
+            appended to all the paths
+
+        -c config_file
+            Use the given config file for the bundles. The config file must
+            have this structure:
+
+            /path/to/generated/bundle
+                /path/to/js/or/css/file/to/bundle
+                /path/to/another/file/to/bundle
+
+            /path/to/another/generated/bundle
+                /path/to/another/file
+                ...
+
+        Example:
+            Create the bundles defined in the file config/bundles.txt and use
+            the /var/www directory as basepath: 
+
+            $> $0 -p apache:apache bundle -b /var/www -c config/bundles.txt
+        
+    generate [-t regexp] [directory [...]]
+        Create the minimized version of the scripts.
+
+        Options:
+        -t regexp
+            Only minimize the files that match the given regexp (by default all
+            the *.js  and *.css files are matched)
+
+        directory
+            If given will minimize all the js and css (or the given regexp)
+            under that directory. If not, will use the local directory.
+
+        Example:
+            Minimize all the *.js and *.css files under my project dir, and
+            create the gzipped versions:
+
+            $> $0 -p apache:apache generate /var/www/myproject
+
+
+    set [-t regexp] [directory [...]]
+        Set up the minimized versions (redo the hard link to pint to the
+        .minimized version), also regenerate the gzipped files.
+
+        Options:
+        -t regexp
+            Only minimize the files that match the given regexp plus the
+            '.unminimized' suffix (by default all the *.unminimized  files are
+            matched)
+
+        directory
+            Search in the given directory for unminimized files (the local
+            dir by default)
+            
+
+    unset [-t regexp] [directory [...]]
+        Set up the unminimized versions of the files (redo the hard link to
+        point to the .unminimized version), elso regenerate the gzipped files.
+
+        Options:
+        -t regexp
+            Only minimize the files that match the given regexp plus the
+            '.unminimized' suffix (by default all the *.unminimized  files are
+            matched)
+
+        directory
+            Search in the given directory for unminimized files (the local
+            dir by default)
+            
+EOH
+    exit ${1:-0}
+}
+
+
+log()
+{
+    local expand ts
+    ## if running from a terminal use colors
+    [[ -t 1 ]] \
+    && {
+        local RED="\033[38;5;196m"
+        local YELLOW="\033[38;5;226m"
+        local GREEN="\033[38;5;46m"
+        local BLUE="\033[38;5;33m"
+        local NORMAL="\033[39m"
+        local header
+    } || {
+        local RED YELLOW GREEN BLUE NORMAL header
+    }
+    ts="$(date "+%Y-%m-%d %H:%M:%S")"
+    [[ "$1" == '-e' ]] && expand='-e' && shift || expand=''
+    [[ "$nonl" == "" ]] && withhdr="yes" || withhdr=''
+    [[ "$1" == '-n' ]] && nonl='-n' && shift || nonl=''
+    case $1 in
+        OK) header="$BLUE${withhdr:+[$ts]::INFO::}$GREEN"; shift;;
+        ERROR) header="$RED${withhdr:+[$ts]::$1::}"; shift;;
+        WARN) header="$YELLOW${withhdr:+[$ts]::$1::}"; shift;;
+        *) header="$BLUE${withhdr:+[$ts]::INFO::}";;
+    esac
+    echo -ne "$header"
+    echo -n $expand "$@"
+    echo -e $nonl "$NORMAL"
+}
+
+## Create the minimized versions of the given files
+minimize()
+{
+    local dir=${1:-.}
+    local pattern=$2
+    local oldsize=1 newsize file
+    log -n ":: Creating the minimized versions of the $pattern files from $dir"
+    for file in $(find ${dir} -type f -iname "$pattern" ); do
+        log -e -n "\n$file: "
+        ## create the unminimized backup file if it does not exist
+        [[ -f $file.unminimized ]] \
+        && rm -f $file.unminimized
+        ln $file $file.unminimized
+        ## create the minimized file
+        yuicompressor --type ${file##*.} -o "${file}.minimized" $file \
+        && oldsize=$(du -b "$file.unminimized" | awk '{ print $1; }') \
+        && { 
+            ## only create the gzipped one if the size is enough
+            [[ ! -f "$file.gz" ]] || rm -f "$file.gz"
+            [[ $oldsize -lt $MINSIZE ]] \
+            || gzip -c -9 ${file} > ${file}.gz
+        } && total_oldsize=$(($total_oldsize + $oldsize)) \
+        && { 
+            [[ $oldsize -lt $MINSIZE ]] \
+            && newsize=$(du -b ${file}.minimized | awk '{ print $1; }') \
+            || {
+                newgsize=$(du -b ${file}.minimized | awk '{ print $1; }')
+                newsize=$(du -b ${file}.gz | awk '{ print $1; }')
+            }
+        } && total_newsize=$(($total_newsize + $newsize)) \
+        && {
+            ## if the permissions are specified, change them
+            [[ "$perms" == "" ]] \
+            || {
+                chown $perms ${file} \
+                && chown $perms ${file}.* \
+                || log -e -n WARN "\nFailed to set permissions to $perms.\n"
+            }
+        } && {
+            [[ $oldsize -lt $MINSIZE ]] \
+            && log -e -n OK "\t\tgain=$(echo "scale=2; 100-100*$newsize/$oldsize" | bc -q)%" \
+            || log -e -n OK "\t\tgain=$(echo "scale=2; 100-100*$newsize/$oldsize" | bc -q)% (w/o gzip $(echo "scale=2; 100-100*$newgsize/$oldsize" | bc -q)%)"
+        } || log ERROR "Failed"
+    done
+    log -e ""
+}
+
+do_generate()
+{
+    local regexp
+    while getopts 't:' option; do
+        case $option in
+            t) regexp="$OPTARGS";;
+            *) usage 1;;
+        esac
+    done
+    shift $(($OPTIND - 1))
+    OPTIND=1
+    ## Those vars are global to aggregate the results in case
+    ## you want to execute this function in more than one dir
+    total_oldsize=${total_oldsize:=0};
+    total_newsize=${total_newsize:=0};
+    shift
+    dirs=("${@:-.}")
+    for dir in "${dirs[@]}"; do
+        [[ -d $dir ]] \
+        || {
+            log WARN "Directory $dir not found, skipping"
+            continue
+        }
+        [[ "$regexp" != "" ]] \
+        && minimize "$dir" "$regexp" \
+        || {
+            minimize "$dir" "*.js"
+            minimize "$dir" "*.css"
+        }
+
+    done
+    [[ "$total_oldsize$total_newsize" != "" ]] \
+    && {
+        [[ "$total_oldsize" == "0" ]] && total_oldsize=1
+        local total_gain="$(echo "scale=2; 100-100*$total_newsize/$total_oldsize" | bc -q)%"
+        log OK "Total OldSize: $total_oldsize   Total Newsize: $total_newsize Total Gain: $total_gain"
+    }
+}
+
+create_dir()
+{
+    local dir=$1
+    [[ -d $dir ]] \
+    || {
+        mkdir -p $dir \
+        || {
+            log ERROR "Destination directory $dir not found and unable to create it."
+            return 1
+        }
+    }
+    return 0
+}
+
+bundle()
+{
+    local dest=$1
+    shift
+    [[ -f $dest ]] && rm -f $dest
+    for file in "$@"; do
+        [[ -f "$file.unminimized" ]] \
+        && cat $file.unminimized >> $dest \
+        || cat $file >> $dest
+
+    done
+    minimize ${dest%/*} "${dest##*/}"
+}
+
+do_bundle()
+{
+    local basepath bundle_file oldIFS bundled=()
+    while getopts 'c:b:' option; do
+        case $option in
+            c) conffile="$OPTARG";;
+            b) basepath="$OPTARG";;
+            *);;
+        esac
+    done
+    [[ -f "$conffile" ]] \
+    || {
+        log WARN "Config file $conffile not found, skipping boundling."
+        exit 1
+    }
+    shopt -s extglob
+    oldIFS=$IFS
+    IFS=$'\n'
+    for line in $(cat ${conffile}); do
+        [[ "${line##*([[:space:]])}" == "" ]] && continue
+        #if starts with spaces
+        if [[ "${line##*([[:space:]])}" != "$line" ]]; then
+            bundled+=("${basepath:+$basepath}${line##*([[:space:]])}")
+        #if it does not start with spaces, it's a header
+        else
+            #if we have a header, create the previous bundle if there was one
+            if [[ "$bundle_file" != "" ]] && [[ "$bundled" != "" ]]; then
+                log -e "Creating bundle ${basepath:+$basepath}$bundle_file: "
+                bundle ${basepath:+$basepath}$bundle_file "${bundled[@]}" \
+                && log OK "OK" \
+                || log ERROR "Failed"
+            fi
+            bundle_file="$line"
+            create_dir "${basepath:+$basepath}${bundle_file%/*}"
+            bundled=()
+        fi
+    done
+    ISF=$oldISF
+    ## if the file ended, do the last bundle if there was one
+    if [[ "$bundle_file" != "" ]] && [[ "$bundled" != "" ]]; then
+        log -e "Creating bundle ${basepath:+$basepath}$bundle_file: "
+        bundle ${basepath:+$basepath}$bundle_file "${bundled[@]}" \
+        && log OK "OK" \
+        || log ERROR "Failed"
+    fi
+    shopt -u extglob
+}
+
+
+set_min()
+{
+    local pattern=$1 dir=$2 mfile file size
+    log "Using the minimized versions for $regexp files under $dir"
+    for mfile in $(find ${dir:-.} -type f -iname "$pattern.minimized" ); do
+        file=${mfile%.minimized}
+        log -e -n "${file%.minimized}: ";
+        ## remove the original file and create the hard link
+        [[ -f ${file} ]] \
+        && rm -f ${file}
+        ln ${mfile} ${file} \
+        && {
+            ## redo the gzipped file
+            [[ -f $file.gz ]] && rm -f $file.gz
+            size="$( du -b $file | awk '{ print $1; }' )"
+            [[ "$size" -lt $MINSIZE ]] || gzip -c -9 $file > $file.gz
+        } && {
+            ## set the permissions
+            [[ "$perms" == "" ]] \
+            || {
+                chown $perms $file \
+                && chown $perms $file.* \
+                || log -e -n WARN "\nFailed to set permissions to $perms.\n"
+            }
+        } && {
+            [[ "$size" -ge $MINSIZE ]] \
+            && log OK "Ok" \
+            || log OK "Ok (nogzip, too small, $size bytes )" 
+        } || log ERROR "Failed";
+    done
+}
+
+unset_min()
+{
+    local pattern=$1 dir=$2 file
+    log "Using the unminimized versions for $regexp files under $dir"
+    for umfile in $(find ${dir:-.} -type f -iname "$pattern.unminimized" ); do
+        file=${umfile%.unminimized}
+        log -e -n "${file}: ";
+        ## remove the original file and create the hard link
+        [[ -f ${file} ]] \
+        && rm -f ${file}
+        ln ${umfile} ${file} \
+        && {
+            ## redo the gzipped file
+            [[ -f $file.gz ]] && rm -f $file.gz
+            size="$( du -b $file | awk '{ print $1; }' )"
+            [[ "$size" -lt $MINSIZE ]] || gzip -c -9 $file > $file.gz
+        } && {
+            ## set the permissions
+            [[ "$perms" == "" ]] \
+            || {
+                chown $perms $file \
+                && chown $perms $file.* \
+                || log -e -n WARN "\nFailed to set permissions to $perms.\n"
+            }
+        } && {
+            [[ "$size" -ge $MINSIZE ]] \
+            && log OK "Ok" \
+            || log OK "Ok (nogzip, too small, $size bytes )" 
+        } || log ERROR "Failed";
+    done
+}
+
+do_set()
+{
+    local regexp
+    while getopts 't:' option; do
+        case $option in
+            t) regexp="$OPTARGS";;
+            *) usage 1;;
+        esac
+    done
+    shift $(($OPTIND - 1))
+    for dir in "$@"; do
+        [[ -d $dir ]] \
+        || {
+            log ERROR "Directory $dir not found."
+            usage 1
+        }
+        [[ "$regexp" != "" ]] \
+        && set_min $regexp $dir \
+        || {
+            set_min "*.css" $dir
+            set_min "*.js" $dir
+        }
+    done
+}
+
+
+do_unset()
+{
+    local regexp
+    while getopts 't:' option; do
+        case $option in
+            t) regexp="$OPTARGS";;
+            *) usage 1;;
+        esac
+    done
+    shift $(($OPTIND - 1))
+    for dir in "$@"; do
+        [[ -d $dir ]] \
+        || {
+            log ERROR "Directory $dir not found."
+            usage 1
+        }
+        [[ "$regexp" != "" ]] \
+        && unset_min $regexp $dir \
+        || {
+            unset_min "*.css" $dir
+            unset_min "*.js" $dir
+        }
+    done
+}
+
+
+
+###################################
+### MAIN
+###################################
+
+[[ $1 == '-d' ]] && shift && set -x
+
+which yuicompressor &>/dev/null \
+|| {
+    log ERROR "yuicompressor binary not found."
+    usage 1
+}
+
+
+perms=''
+
+while getopts "p:h" option; do
+    case $option in
+        p) perms="$OPTARG";;
+        h) usage;;
+        *) log ERROR "Option $option not recognized."; usage 1;;
+    esac
+done
+shift $(($OPTIND-1))
+OPTIND=1
+
+command=$1
+shift
+case $command in
+    bundle) do_bundle "$@";;
+    generate) do_generate "$@";;
+    set) do_set "$@";;
+    unset) do_unset "$@";;
+esac
+
+
