@@ -245,7 +245,7 @@ do_generate()
     local regexp
     while getopts 't:' option; do
         case $option in
-            t) regexp="$OPTARGS";;
+            t) regexp="$OPTARG";;
             *) usage 1;;
         esac
     done
@@ -391,7 +391,7 @@ set_min()
 unset_min()
 {
     local pattern=$1 dir=$2 file
-    log "Using the unminimized versions for $regexp files under $dir"
+    log "Using the unminimized versions for $pattern files under $dir"
     for umfile in $(find ${dir:-.} -type f -iname "$pattern.unminimized" ); do
         file=${umfile%.unminimized}
         log -e -n "${file}: ";
@@ -425,11 +425,12 @@ do_set()
     local regexp
     while getopts 't:' option; do
         case $option in
-            t) regexp="$OPTARGS";;
+            t) regexp="$OPTARG";;
             *) usage 1;;
         esac
     done
     shift $(($OPTIND - 1))
+    OPTIND=1
     for dir in "$@"; do
         [[ -d $dir ]] \
         || {
@@ -451,11 +452,12 @@ do_unset()
     local regexp
     while getopts 't:' option; do
         case $option in
-            t) regexp="$OPTARGS";;
+            t) regexp="$OPTARG";;
             *) usage 1;;
         esac
     done
     shift $(($OPTIND - 1))
+    OPTIND=1
     for dir in "$@"; do
         [[ -d $dir ]] \
         || {
