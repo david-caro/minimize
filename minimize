@@ -28,11 +28,11 @@ MINSIZE=300
 usage()
 {
     cat <<EOH
-Usage: $0 [-d] [-p user:group] command options 
+Usage: $0 [-d] [-p user:group] command options
 
     Sript to minimize and bundle js and css files using yuicompressor
     (yuicompressor must be installed and in the PATH for this script to work).
-    Uses hardlinks to copy the files, and leaves a copy of the file 
+    Uses hardlinks to copy the files, and leaves a copy of the file
     unminimized, and minimized like this:
 
     file.js
@@ -47,7 +47,7 @@ Usage: $0 [-d] [-p user:group] command options
     later. An example of apache configuration to do this will be something
     like this:
     ----------------------
-    AddEncoding gzip 
+    AddEncoding gzip
     RewriteEngine On
     ## If the browser accepts gzip
     RewriteCond %{HTTP:Accept-Encoding} gzip
@@ -58,7 +58,7 @@ Usage: $0 [-d] [-p user:group] command options
     ## Only js and css files allowed (if more add them here)
     RewriteCond %{REQUEST_URI} ^.*\.(js|css)$
     ## And serve it only if the files exists...
-    RewriteCond %{REQUEST_FILENAME}.gz -f 
+    RewriteCond %{REQUEST_FILENAME}.gz -f
     RewriteRule (.*)$ /\$1.gz [L,E=vary]
     ## Avoid th proxies to send gzipped content to clients that did
     ## not send the accept: gzip header
@@ -106,10 +106,10 @@ Usage: $0 [-d] [-p user:group] command options
 
         Example:
             Create the bundles defined in the file config/bundles.txt and use
-            the /var/www directory as basepath: 
+            the /var/www directory as basepath:
 
             $> $0 -p apache:apache bundle -b /var/www -c config/bundles.txt
-        
+
     generate [-t regexp] [directory [...]]
         Create the minimized version of the scripts.
 
@@ -142,7 +142,7 @@ Usage: $0 [-d] [-p user:group] command options
         directory
             Search in the given directory for unminimized files (the local
             dir by default)
-            
+
 
     unset [-t regexp] [directory [...]]
         Set up the unminimized versions of the files (redo the hard link to
@@ -157,7 +157,7 @@ Usage: $0 [-d] [-p user:group] command options
         directory
             Search in the given directory for unminimized files (the local
             dir by default)
-            
+
 EOH
     exit ${1:-0}
 }
@@ -209,13 +209,13 @@ minimize()
         ## create the minimized file
         yuicompressor --type ${file##*.} -o "${file}.minimized" $file \
         && oldsize=$(du -b "$file.unminimized" | awk '{ print $1; }') \
-        && { 
+        && {
             ## only create the gzipped one if the size is enough
             [[ ! -f "$file.gz" ]] || rm -f "$file.gz"
             [[ $oldsize -lt $MINSIZE ]] \
             || gzip -c -9 ${file} > ${file}.gz
         } && total_oldsize=$(($total_oldsize + $oldsize)) \
-        && { 
+        && {
             [[ $oldsize -lt $MINSIZE ]] \
             && newsize=$(du -b ${file}.minimized | awk '{ print $1; }') \
             || {
@@ -232,12 +232,31 @@ minimize()
                 || log -e -n WARN "\nFailed to set permissions to $perms.\n"
             }
         } && {
+            [[ $oldsize -eq 0 ]] && log -n ERROR "EMPTY FILE: please check" && continue
             [[ $oldsize -lt $MINSIZE ]] \
             && log -e -n OK "\t\tgain=$(echo "scale=2; 100-100*$newsize/$oldsize" | bc -q)%" \
-            || log -e -n OK "\t\tgain=$(echo "scale=2; 100-100*$newsize/$oldsize" | bc -q)% (w/o gzip $(echo "scale=2; 100-100*$newgsize/$oldsize" | bc -q)%)"
+            || log -e -n OK "\t\tgain=$( \
+                    echo "scale=2; 100-100*$newsize/$oldsize" | bc -q \
+                )% (w/o gzip $( \
+                    echo "scale=2; 100-100*$newgsize/$oldsize" | bc -q)%)"
         } || log ERROR "Failed"
     done
     log -e ""
+}
+
+minimize_all_js()
+{
+    local dir="$1"
+    tmp_js_bundle="$(tempfile 2>/dev/null)" \
+    || tmp_js_bundle="/tmp/tmp_bundle.js"
+    bundle_all "$dir" "$tmp_js_bundle"
+    yuicompressor --type js -o "${tmp_js_bundle}.minimized" $tmp_js_bundle \
+    || {
+        log ERROR "Failed to minimize the temporal bundle file $tmp_js_file"
+        return 1
+    }
+    split_bundle "$tmp_js_bundle.minimized"
+    rm -f $tmp_js_bundle $tmp_js_bundle.minimized
 }
 
 do_generate()
@@ -266,7 +285,11 @@ do_generate()
         [[ "$regexp" != "" ]] \
         && minimize "$dir" "$regexp" \
         || {
-            minimize "$dir" "*.js"
+            ## the js need to be bundled and minimized together to avoid name
+            ## collisions when creating bundles of minimized js
+            minimize_all_js "$dir"
+            ## The css have no problems being bundled whe they are minimized
+            ## one by one
             minimize "$dir" "*.css"
         }
 
@@ -293,6 +316,75 @@ create_dir()
     return 0
 }
 
+
+## Add a file into a bundle adding also the header with the filename
+add_to_bundle()
+{
+    bundle="${1:?}"
+    fname="${2:?}"
+    [[ -f "$fname.unminimized" ]] \
+    && rm -f $fname.unminimized
+    ln $fname $fname.unminimized
+    echo "" >> $bundle
+    echo "/*! FNAME::$fname */" >> $bundle
+    cat $fname >> $bundle
+}
+
+## This bundle will add a tag with the original filename on it, that will not 
+## be deleted when minimizing
+bundle_all()
+{
+    local dest=${2:?)} \
+    || return 1
+    local basedir=${1:?}
+    export -f add_to_bundle
+    [[ -f $dest ]] && rm -f $dest
+    find -iname "*.js" $basename -exec  bash -c "add_to_bundle $dest \"{}\"" \;
+}
+
+## This function split a bundle that has the file tags in each of the files
+## from it was originally created, but with the minimized extension, used to
+## create the minimized version of the js scripts
+split_bundle()
+{
+    local orig="${1:?}" line
+    local outfile=/dev/null
+    local oldsize=1 newsize file
+    oldIFS=$IFS
+    IFS=$'\n'
+    while read -r line; do
+        [[ "${line:0:11}" == '/*! FNAME::' ]] \
+        && {
+            [[ "$outfile" != "/dev/null" ]] \
+            && {
+                oldsize="$( du -b ${outfile%.minimized} | awk '{ print $1; }' )"
+                newsize="$( du -b $outfile | awk '{ print $1; }' )"
+                total_oldsize="$(($total_oldsize + $oldsize))"
+                total_newsize="$(($total_newsize + $newsize))"
+                log -e OK "\tgain=$(echo "scale=2; 100-100*$newsize/$oldsize" | bc -q)%"
+            }
+            outfile="${line:11}"
+            outfile="${outfile::$((${#outfile}-3))}.minimized"
+            log -n "Processing file ${outfile%.minimized}"
+            [[ -f "$outfile" ]] && rm -f $outfile
+            continue
+        } || {
+            echo "$line" >> $outfile
+        }
+    done < $orig
+    IFS=$oldIFS
+    [[ "$outfile" != "/dev/null" ]] \
+    && {
+        tail -n1 $orig >> $outfile
+        oldsize="$( du -b ${outfile%.minimized} | awk '{ print $1; }' )"
+        newsize="$( du -b $outfile | awk '{ print $1; }' )"
+        total_oldsize="$(($total_oldsize + $oldsize))"
+        total_newsize="$(($total_newsize + $newsize))"
+        log -e OK "\tgain=$(echo "scale=2; 100-100*$newsize/$oldsize" | bc -q)%"
+    }
+}
+
+
 bundle()
 {
     local dest=$1
@@ -306,6 +398,7 @@ bundle()
     done
     minimize ${dest%/*} "${dest##*/}"
 }
+
 
 do_bundle()
 {
@@ -383,10 +476,11 @@ set_min()
         } && {
             [[ "$size" -ge $MINSIZE ]] \
             && log OK "Ok" \
-            || log OK "Ok (nogzip, too small, $size bytes )" 
+            || log OK "Ok (nogzip, too small, $size bytes )"
         } || log ERROR "Failed";
     done
 }
+
 
 unset_min()
 {
@@ -415,10 +509,11 @@ unset_min()
         } && {
             [[ "$size" -ge $MINSIZE ]] \
             && log OK "Ok" \
-            || log OK "Ok (nogzip, too small, $size bytes )" 
+            || log OK "Ok (nogzip, too small, $size bytes )"
         } || log ERROR "Failed";
     done
 }
+
 
 do_set()
 {
