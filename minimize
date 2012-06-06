@@ -196,39 +196,39 @@ log()
 ## Create the minimized versions of the given files
 minimize()
 {
-    local dir=${1:-.}
-    local pattern=$2
+    local dir="${1:-.}"
+    local pattern="$2"
     local oldsize=1 newsize file
     log -n ":: Creating the minimized versions of the $pattern files from $dir"
-    for file in $(find ${dir} -type f -iname "$pattern" ); do
+    for file in $(find "${dir}" -type f -iname "$pattern" ); do
         log -e -n "\n$file: "
         ## create the unminimized backup file if it does not exist
-        [[ -f $file.unminimized ]] \
-        && rm -f $file.unminimized
-        ln $file $file.unminimized
+        [[ -f "$file.unminimized" ]] \
+        && rm -f "$file.unminimized"
+        ln "$file" "$file.unminimized"
         ## create the minimized file
-        yuicompressor --type ${file##*.} -o "${file}.minimized" $file \
+        yuicompressor --type "${file##*.}" -o "${file}.minimized" "$file" \
         && oldsize=$(du -b "$file.unminimized" | awk '{ print $1; }') \
         && {
             ## only create the gzipped one if the size is enough
             [[ ! -f "$file.gz" ]] || rm -f "$file.gz"
             [[ $oldsize -lt $MINSIZE ]] \
-            || gzip -c -9 ${file} > ${file}.gz
+            || gzip -c -9 "${file}" > "${file}.gz"
         } && total_oldsize=$(($total_oldsize + $oldsize)) \
         && {
             [[ $oldsize -lt $MINSIZE ]] \
-            && newsize=$(du -b ${file}.minimized | awk '{ print $1; }') \
+            && newsize=$(du -b "${file}.minimized" | awk '{ print $1; }') \
             || {
-                newgsize=$(du -b ${file}.minimized | awk '{ print $1; }')
-                newsize=$(du -b ${file}.gz | awk '{ print $1; }')
+                newgsize=$(du -b "${file}.minimized" | awk '{ print $1; }')
+                newsize=$(du -b "${file}.gz" | awk '{ print $1; }')
             }
         } && total_newsize=$(($total_newsize + $newsize)) \
         && {
             ## if the permissions are specified, change them
             [[ "$perms" == "" ]] \
             || {
-                chown $perms ${file} \
-                && chown $perms ${file}.* \
+                chown "$perms" "${file}" \
+                && chown "$perms" ${file}.* \
                 || log -e -n WARN "\nFailed to set permissions to $perms.\n"
             }
         } && {
@@ -248,22 +248,22 @@ minimize_all_js()
 {
     local dir="$1"
     tmp_js_bundle="$(tempfile 2>/dev/null)" \
-    || tmp_js_bundle="/tmp/tmp_bundle.js"
+    || tmp_js_bundle="/tmp/tmp_bundle.js.$$"
     bundle_all "$dir" "$tmp_js_bundle"
-    yuicompressor --type js -o "${tmp_js_bundle}.minimized" $tmp_js_bundle \
+    yuicompressor --type js -o "${tmp_js_bundle}.minimized" "$tmp_js_bundle" \
     || {
         log ERROR "Failed to minimize the temporal bundle file $tmp_js_file"
         return 1
     }
     split_bundle "$tmp_js_bundle.minimized"
-    rm -f $tmp_js_bundle $tmp_js_bundle.minimized
+    rm -f "$tmp_js_bundle" "$tmp_js_bundle.minimized"
 }
 
 do_generate()
 {
     local regexp
     while getopts 't:' option; do
-        case $option in
+        case "$option" in
             t) regexp="$OPTARG";;
             *) usage 1;;
         esac
@@ -277,7 +277,7 @@ do_generate()
     shift
     dirs=("${@:-.}")
     for dir in "${dirs[@]}"; do
-        [[ -d $dir ]] \
+        [[ -d "$dir" ]] \
         || {
             log WARN "Directory $dir not found, skipping"
             continue
@@ -305,13 +305,18 @@ do_generate()
 create_dir()
 {
     local dir=$1
-    [[ -d $dir ]] \
+    [[ -d "$dir" ]] \
     || {
-        mkdir -p $dir \
+        mkdir -p "$dir" \
         || {
             log ERROR "Destination directory $dir not found and unable to create it."
             return 1
         }
+    }
+    [[ "$perms" == "" ]] \
+    || {
+        chown -R "$perms" "$dir" \
+        || log -e -n WARN "\nFailed to set permissions to $perms.\n"
     }
     return 0
 }
@@ -323,23 +328,26 @@ add_to_bundle()
     bundle="${1:?}"
     fname="${2:?}"
     [[ -f "$fname.unminimized" ]] \
-    && rm -f $fname.unminimized
-    ln $fname $fname.unminimized
-    echo "" >> $bundle
-    echo "/*! FNAME::$fname */" >> $bundle
-    cat $fname >> $bundle
+    && rm -f "$fname.unminimized"
+    ln "$fname" "$fname.unminimized"
+    echo "" >> "$bundle"
+    echo "/*! FNAME::$fname */" >> "$bundle"
+    cat "$fname" >> "$bundle"
+    ## WARNING: some js files do not end with ';'!!
+    echo ";" >> "$bundle"
 }
 
 ## This bundle will add a tag with the original filename on it, that will not 
 ## be deleted when minimizing
 bundle_all()
 {
-    local dest=${2:?)} \
+    local dest="${2:?)}" \
     || return 1
+    echo "   Creating temporary bundle for the js files on ${2}"
     local basedir=${1:?}
     export -f add_to_bundle
-    [[ -f $dest ]] && rm -f $dest
-    find -iname "*.js" $basename -exec  bash -c "add_to_bundle $dest \"{}\"" \;
+    [[ -f "$dest" ]] && rm -f "$dest"
+    find "$basedir" -iname "*.js" -exec  bash -c "add_to_bundle \"$dest\" \"{}\"" \;
 }
 
 ## This function split a bundle that has the file tags in each of the files
@@ -387,16 +395,15 @@ split_bundle()
 
 bundle()
 {
-    local dest=$1
+    local dest="$1"
     shift
-    [[ -f $dest ]] && rm -f $dest
+    [[ -f "$dest" ]] && rm -f "$dest"
     for file in "$@"; do
         [[ -f "$file.unminimized" ]] \
-        && cat $file.unminimized >> $dest \
-        || cat $file >> $dest
-
+        && cat "$file.unminimized" >> "$dest" \
+        || cat "$file" >> "$dest"
     done
-    minimize ${dest%/*} "${dest##*/}"
+    minimize "${dest%/*}" "${dest##*/}"
 }
 
 
@@ -418,7 +425,7 @@ do_bundle()
     shopt -s extglob
     oldIFS=$IFS
     IFS=$'\n'
-    for line in $(cat ${conffile}); do
+    for line in $(cat "${conffile}"); do
         [[ "${line##*([[:space:]])}" == "" ]] && continue
         #if starts with spaces
         if [[ "${line##*([[:space:]])}" != "$line" ]]; then
@@ -441,7 +448,7 @@ do_bundle()
     ## if the file ended, do the last bundle if there was one
     if [[ "$bundle_file" != "" ]] && [[ "$bundled" != "" ]]; then
         log -e "Creating bundle ${basepath:+$basepath}$bundle_file: "
-        bundle ${basepath:+$basepath}$bundle_file "${bundled[@]}" \
+        bundle "${basepath:+$basepath}$bundle_file" "${bundled[@]}" \
         && log OK "OK" \
         || log ERROR "Failed"
     fi
@@ -451,26 +458,26 @@ do_bundle()
 
 set_min()
 {
-    local pattern=$1 dir=$2 mfile file size
+    local pattern="$1" dir="$2" mfile file size
     log "Using the minimized versions for $regexp files under $dir"
-    for mfile in $(find ${dir:-.} -type f -iname "$pattern.minimized" ); do
-        file=${mfile%.minimized}
+    for mfile in $(find "${dir:-.}" -type f -iname "$pattern.minimized" ); do
+        file="${mfile%.minimized}"
         log -e -n "${file%.minimized}: ";
         ## remove the original file and create the hard link
-        [[ -f ${file} ]] \
-        && rm -f ${file}
-        ln ${mfile} ${file} \
+        [[ -f "${file}" ]] \
+        && rm -f "${file}"
+        ln "${mfile}" "${file}" \
         && {
             ## redo the gzipped file
-            [[ -f $file.gz ]] && rm -f $file.gz
-            size="$( du -b $file | awk '{ print $1; }' )"
-            [[ "$size" -lt $MINSIZE ]] || gzip -c -9 $file > $file.gz
+            [[ -f "$file.gz" ]] && rm -f "$file.gz"
+            size="$( du -b "$file" | awk '{ print $1; }' )"
+            [[ "$size" -lt $MINSIZE ]] || gzip -c -9 "$file" > "$file.gz"
         } && {
             ## set the permissions
             [[ "$perms" == "" ]] \
             || {
-                chown $perms $file \
-                && chown $perms $file.* \
+                chown "$perms" "$file" \
+                && chown "$perms" $file.* \
                 || log -e -n WARN "\nFailed to set permissions to $perms.\n"
             }
         } && {
@@ -484,15 +491,15 @@ set_min()
 
 unset_min()
 {
-    local pattern=$1 dir=$2 file
+    local pattern="$1" dir="$2" file
     log "Using the unminimized versions for $pattern files under $dir"
-    for umfile in $(find ${dir:-.} -type f -iname "$pattern.unminimized" ); do
-        file=${umfile%.unminimized}
+    for umfile in $(find "${dir:-.}" -type f -iname "$pattern.unminimized" ); do
+        file="${umfile%.unminimized}"
         log -e -n "${file}: ";
         ## remove the original file and create the hard link
-        [[ -f ${file} ]] \
-        && rm -f ${file}
-        ln ${umfile} ${file} \
+        [[ -f "${file}" ]] \
+        && rm -f "${file}"
+        ln "${umfile}" "${file}" \
         && {
             ## redo the gzipped file
             [[ -f $file.gz ]] && rm -f $file.gz
@@ -502,8 +509,8 @@ unset_min()
             ## set the permissions
             [[ "$perms" == "" ]] \
             || {
-                chown $perms $file \
-                && chown $perms $file.* \
+                chown "$perms" "$file" \
+                && chown "$perms" $file.* \
                 || log -e -n WARN "\nFailed to set permissions to $perms.\n"
             }
         } && {
@@ -519,7 +526,7 @@ do_set()
 {
     local regexp
     while getopts 't:' option; do
-        case $option in
+        case "$option" in
             t) regexp="$OPTARG";;
             *) usage 1;;
         esac
@@ -527,16 +534,16 @@ do_set()
     shift $(($OPTIND - 1))
     OPTIND=1
     for dir in "$@"; do
-        [[ -d $dir ]] \
+        [[ -d "$dir" ]] \
         || {
             log ERROR "Directory $dir not found."
             usage 1
         }
         [[ "$regexp" != "" ]] \
-        && set_min $regexp $dir \
+        && set_min "$regexp" "$dir" \
         || {
-            set_min "*.css" $dir
-            set_min "*.js" $dir
+            set_min "*.css" "$dir"
+            set_min "*.js" "$dir"
         }
     done
 }
@@ -546,7 +553,7 @@ do_unset()
 {
     local regexp
     while getopts 't:' option; do
-        case $option in
+        case "$option" in
             t) regexp="$OPTARG";;
             *) usage 1;;
         esac
@@ -560,10 +567,10 @@ do_unset()
             usage 1
         }
         [[ "$regexp" != "" ]] \
-        && unset_min $regexp $dir \
+        && unset_min "$regexp" "$dir" \
         || {
-            unset_min "*.css" $dir
-            unset_min "*.js" $dir
+            unset_min "*.css" "$dir"
+            unset_min "*.js" "$dir"
         }
     done
 }
@@ -595,9 +602,9 @@ done
 shift $(($OPTIND-1))
 OPTIND=1
 
-command=$1
+command="$1"
 shift
-case $command in
+case "$command" in
     bundle) do_bundle "$@";;
     generate) do_generate "$@";;
     set) do_set "$@";;
